@@ -9,10 +9,11 @@ ro <- 1000          #gestosc
 Q <- 0.000033333    #przeplyw wody
 V <- 0.05           #objetosc zbiornika
 R <- 10             #opor grzalki
-t <- 30000          #liczba cykli
+t <- 3000           #liczba cykli
 Tp <- 0.1           #okres probkowania
 sim_cycles <- t/Tp  #liczba krokow symulacji
 time_step <- 1:(sim_cycles)*Tp
+time_step2 <- 1:(sim_cycles+2)*Tp
 u_min <- 0
 u_max <- 50
 UGmin <- 0
@@ -35,14 +36,14 @@ cppFunction('void f(int sim_cycles,NumericVector &e, NumericVector &temp, Numeri
 #reactive
 #Td Ti kp UG
 
-
 ui <- dashboardPage(
   dashboardHeader(title = "Bilans energii"),
   dashboardSidebar(
     sidebarMenu(
       menuItem("Regulator PID", tabName="dashboard", icon = icon("dashboard")),
       menuItem("Wykresy", tabName="wykresy", icon = icon("chart-bar")),
-      menuItem("Dane numeryczne", tabName="dane", icon = icon("stream"))
+      menuItem("Dane numeryczne", tabName="dane", icon = icon("stream")),
+      sliderInput(inputId = "T_0", label = "Temperatura poczatkowa i temperatura zadana", value = c(0,100), min=0, max=100)
     )
   ),
   
@@ -63,21 +64,19 @@ ui <- dashboardPage(
         ),
       tabItem(tabName = "wykresy",
         fluidRow(
-          
-          box(
-            sliderInput(inputId="suwak",label="costam", value = 1, min = 1, max = 10)
-          ),
-          
-          box(
-            sliderInput(inputId = "T_0", label = "Temperatura poczatkowa i temperatura zadana", value = c(0, 100), min = 0, max = 100)
-          ),
-          
-          box(
-            textOutput('val2')
-          ),
-          
+          column(12,align="center",
           box(
             plotOutput('val')
+          ),
+          box(
+            plotOutput('val5')
+          ),
+          box(
+            plotOutput('val3')
+          ),
+          box(
+            plotOutput('val6')
+          )
           )
         )
       ),
@@ -87,7 +86,6 @@ ui <- dashboardPage(
             DTOutput('val4')
           )
         )
-        
       )
     )
   )
@@ -98,22 +96,24 @@ ui <- dashboardPage(
 server <- function(input, output) {
   output$suw <- renderPlot({ ggplot() + geom_histogram(aes(rnorm(input$suwak))) })
   
+  T_cz <- V/Q
+  k1 <- rep(0,sim_cycles)
+  k2 <- rep(0,sim_cycles)
+  SM <- R*ro*c*Q
+  u <- rep(0,sim_cycles)
+  e <- rep(0,sim_cycles)
+  e_sum <- 0
+  
   wyniki <- reactive({
     temp_out <- c(input$T_0, rep(0, sim_cycles))
-    T_cz <- V/Q
-    k1 <- rep(0,sim_cycles)
-    k2 <- rep(0,sim_cycles)
-    SM <- R*ro*c*Q
-    u <- rep(0,sim_cycles)
-    e <- rep(0,sim_cycles)
     T0 <- input$T_0[1]
     T_dest <- input$T_0[2]
     kp <- input$kp
     Ti <- input$Ti
     Td <- input$Td
-    e_sum <- 0
+
     f(sim_cycles, e, temp_out, u, T_dest, kp, Tp, Ti, T0, e_sum, Td, k1, k2, Q, SM, T_cz)
-    dane <- data.frame(e,u,k1,k2)
+    dane <- data.frame(e,u,k1,k2, temp_out[c(-1,-2)])
     dane
   })
   
@@ -123,11 +123,14 @@ server <- function(input, output) {
   output$val3 <- renderPlot({
     ggplot(NULL, aes(x = time_step, y=wyniki()$u)) + geom_point()
   })
-  output$val4 <- renderPlot({
+  output$val5 <- renderPlot({
     ggplot(NULL, aes(x = time_step, y=wyniki()$k1)) + geom_point()
   })
+  output$val6 <- renderPlot({
+    ggplot(NULL, aes(x = time_step, y = wyniki()$temp_out)) + geom_point()
+  })
   output$val2 <- renderText({
-    c(length(wyniki()$e), length(time_step))
+    c(length(wyniki()$e), length(time_step),length(wyniki()$u),length(wyniki()$k1))
   })
 
   output$val4 <- renderDT(wyniki())
