@@ -7,9 +7,9 @@ library(DT)
 c <- 4190           #cieplo wlasciwe
 ro <- 1000          #gestosc
 Q <- 0.000033333    #przeplyw wody
-V <- 0.05           #objetosc zbiornika
+V <- 0.01           #objetosc zbiornika
 R <- 10             #opor grzalki
-t <- 3000           #liczba cykli
+t <- 600           #liczba cykli
 Tp <- 0.1           #okres probkowania
 sim_cycles <- t/Tp  #liczba krokow symulacji
 time_step <- 1:(sim_cycles)*Tp
@@ -18,23 +18,31 @@ u_min <- 0
 u_max <- 50
 UGmin <- 0
 UGmax <- 350
-#e_sum <- 0
 
-cppFunction('void f(int sim_cycles,NumericVector &e, NumericVector &temp, NumericVector &u, const double T, const double& kp, const double& Tp, const double& Ti, int T0, double& e_sum, const double& Td, NumericVector &k1, NumericVector &k2, const double &Q, const double& SM, const double& T_cz){
-    for(int i=0 ; i<sim_cycles ; ++i) {
+cppFunction('void f(int sim_cycles,NumericVector &e, NumericVector &temp, NumericVector &u, const double T, const double& kp, const double& Tp, const double& Ti, int T0, double& e_sum, const double& Td, NumericVector &k1, NumericVector &k2, const double &Q, const double& SM, const double& T_cz, NumericVector &UG, NumericVector &Qw, NumericVector &Qg, double &n, double &koszt, double &uchyb){
+    e[0] = 0;
+    u[0] = 0;
+    temp[0] = T0;
+    temp[1] = T0;
+    UG[0] = 250;
+    Qw[0] = 0.01 * 4190 * 1000 * 0.5;
+    Qg[0] = 225/11;
+    for(int i=1 ; i<sim_cycles ; ++i) {
       e[i] = T - temp[i-1];
       e_sum += e[i];
       u[i] = kp * (e[i] + (Tp / Ti) * e_sum + (Td / Tp) * (e[i] - e[i-1]));
-      k1[i] = -(temp[i] - T0) / Q;
-      k2[i] = 2*u[i]/SM;
-      temp[i] = ( - ( (k1[i] * Q) + (temp[i-1] - T0) + k2[i]*(u[i] - u[i-1]) )/T_cz );
-     
+      UG[i] = u[i] * 500;
+      Qw[i] = (temp[i] - (Q*T0+0.01*temp[i])/(Q+0.01))*(Q+0.01);
+      Qg[i] = ((UG[i]*UG[i])/11)*n;
+      
+      koszt += Qg[i];
+        
+      temp[i+1] = (Qg[i]-Qw[i])/(0.01*1000*4190) + temp[i];
     }
+    uchyb = abs(temp[sim_cycles+1] - T)/(T - T0) * 100;
+    temp[sim_cycles+1] = temp[sim_cycles];
 }')
 
-# temp[i] = u[i] * (T - T0) / (u_max - u_min) + T0;
-#reactive
-#Td Ti kp UG
 
 ui <- dashboardPage(
   dashboardHeader(title = "Bilans energii"),
@@ -43,7 +51,8 @@ ui <- dashboardPage(
       menuItem("Regulator PID", tabName="dashboard", icon = icon("dashboard")),
       menuItem("Wykresy", tabName="wykresy", icon = icon("chart-bar")),
       menuItem("Dane numeryczne", tabName="dane", icon = icon("stream")),
-      sliderInput(inputId = "T_0", label = "Temperatura poczatkowa i temperatura zadana", value = c(0,100), min=0, max=100)
+      sliderInput(inputId = "T_0", label = "Temperatura poczatkowa i temperatura zadana", value = c(20,80), min=0, max=100),
+      sliderInput(inputId = "n", label = "Liczba grzalek", value = 1, min = 1, max = 4)
     )
   ),
   
@@ -52,31 +61,26 @@ ui <- dashboardPage(
     tabItems(
       tabItem(tabName = "dashboard",
         fluidRow(
-          box(width=6,sliderInput(inputId="Td", label="Czas rozniczkowania", value = 0.2, min = 0.2, max = 1, step = 0.2 )
+          box(width=6,sliderInput(inputId="Td", label="Czas rozniczkowania (Td)", value = 0.00004, min = 0.00001, max = 0.0001, step = 0.00001 )
           ),
           box(width=6,
-            sliderInput(inputId = "Ti", label = "Czas calkowania", value = 1, min = 1, max = 10)
+            sliderInput(inputId = "Ti", label = "Czas calkowania (Ti)", value = 550, min = 100, max = 1000, step = 50)
           ),
           box(width=12,
-            sliderInput(inputId = "kp", label = "Wzmocnienie", value = 0.1, min = 0.1, max = 1, step = 0.05)
+            sliderInput(inputId = "kp", label = "Wzmocnienie", value = 0.02, min = 0.01, max = 0.1, step = 0.01)
           )
           )
         ),
       tabItem(tabName = "wykresy",
         fluidRow(
-          column(12,align="center",
           box(
-            plotOutput('val')
+            plotOutput('uchyb')
           ),
           box(
-            plotOutput('val5')
+            plotOutput('ug')
           ),
-          box(
-            plotOutput('val3')
-          ),
-          box(
-            plotOutput('val6')
-          )
+          box(width = 12,
+            plotOutput('temp')
           )
         )
       ),
@@ -94,7 +98,6 @@ ui <- dashboardPage(
 
 
 server <- function(input, output) {
-  output$suw <- renderPlot({ ggplot() + geom_histogram(aes(rnorm(input$suwak))) })
   
   T_cz <- V/Q
   k1 <- rep(0,sim_cycles)
@@ -102,7 +105,12 @@ server <- function(input, output) {
   SM <- R*ro*c*Q
   u <- rep(0,sim_cycles)
   e <- rep(0,sim_cycles)
+  UG <- rep(0, sim_cycles)
+  Qw <- rep(0, sim_cycles)
+  Qg <- rep(0,sim_cycles)
   e_sum <- 0
+  koszt <- 0
+  uchyb <- 0
   
   wyniki <- reactive({
     temp_out <- c(input$T_0, rep(0, sim_cycles))
@@ -111,29 +119,34 @@ server <- function(input, output) {
     kp <- input$kp
     Ti <- input$Ti
     Td <- input$Td
+    n <- input$n
+    koszt2 <- koszt
+    uchyb2 <- uchyb
 
-    f(sim_cycles, e, temp_out, u, T_dest, kp, Tp, Ti, T0, e_sum, Td, k1, k2, Q, SM, T_cz)
-    dane <- data.frame(e,u,k1,k2, temp_out[c(-1,-2)])
-    dane
+    f(sim_cycles, e, temp_out, u, T_dest, kp, Tp, Ti, T0, e_sum, Td, k1, k2, Q, SM, T_cz, UG, Qw, Qg, n, koszt2, uchyb2)
+    dane <- data.frame(e[-1],u[-1],UG[-1], temp_out[c(-sim_cycles, -sim_cycles+1, -sim_cycles+2)])
+    list(dane, koszt2, uchyb2)
   })
   
-  output$val <- renderPlot({
-    ggplot(NULL, aes(x = time_step, y=wyniki()$e)) + geom_point()
+  data.dt <- reactive({ datatable(wyniki()[[1]], colnames = c("Uchyb", "Przeplyw", "Napiecie", "Temperatura")) })
+  
+  output$uchyb <- renderPlot({
+    ggplot(NULL, aes(x = time_step[-1], y=wyniki()[[1]]$e)) + geom_line(colour="blue", size=0.8) + scale_x_continuous(name = "Czas") + scale_y_continuous(name = "Uchyb") + theme(text = element_text(size = 17))   
   })
-  output$val3 <- renderPlot({
-    ggplot(NULL, aes(x = time_step, y=wyniki()$u)) + geom_point()
+  output$u <- renderPlot({
+    ggplot(NULL, aes(x = time_step[-1], y=wyniki()[[1]]$u)) + geom_line(colour="blue", size=0.8) + scale_x_continuous(name = "Czas") + scale_y_continuous(name = "cos") + theme(text = element_text(size = 17))   
   })
-  output$val5 <- renderPlot({
-    ggplot(NULL, aes(x = time_step, y=wyniki()$k1)) + geom_point()
+  output$ug <- renderPlot({
+    ggplot(NULL, aes(x = time_step[-1], y=wyniki()[[1]]$UG)) + geom_line(colour="blue", size=0.8) + scale_x_continuous(name = "Czas") + scale_y_continuous(name = "Napięcie grzałki [V]") + theme(text = element_text(size = 17))   
   })
-  output$val6 <- renderPlot({
-    ggplot(NULL, aes(x = time_step, y = wyniki()$temp_out)) + geom_point()
-  })
-  output$val2 <- renderText({
-    c(length(wyniki()$e), length(time_step),length(wyniki()$u),length(wyniki()$k1))
+  output$temp <- renderPlot({
+    ggplot(NULL, aes(x = time_step[-1], y = wyniki()[[1]]$temp_out)) + geom_line(colour="blue", size=0.8) + scale_x_continuous(name = "Czas") + scale_y_continuous(name = "Temperatura") + theme(text = element_text(size = 17))   
   })
 
-  output$val4 <- renderDT(wyniki())
+
+  output$val4 <- renderDT(wyniki()[[1]])
+  
+
 }
 
 shinyApp(ui = ui, server = server)
